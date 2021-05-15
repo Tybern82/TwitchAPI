@@ -81,6 +81,10 @@
     <Compile Include="twitchapi\auth\TwitchScope.cs" />
     <Compile Include="twitchapi\auth\UserAccessToken.cs" />
     <Compile Include="twitchapi\BaseRequest.cs" />
+    <Compile Include="twitchapi\emotes\GetEmotesetRequest.cs" />
+    <Compile Include="twitchapi\emotes\GetEmotesRequest.cs" />
+    <Compile Include="twitchapi\emotes\TwitchEmote.cs" />
+    <Compile Include="twitchapi\irc\IRCCapCommand.cs" />
     <Compile Include="twitchapi\irc\IRCCommand.cs" />
     <Compile Include="twitchapi\irc\IRCJoinCommand.cs" />
     <Compile Include="twitchapi\irc\IRCListCommand.cs" />
@@ -92,7 +96,10 @@
     <Compile Include="twitchapi\irc\IRCUserCommand.cs" />
     <Compile Include="twitchapi\irc\TwitchIRC.cs" />
     <Compile Include="twitchapi\irc\TwitchWebSocket.cs" />
+    <Compile Include="twitchapi\streams\GetStreamsRequest.cs" />
+    <Compile Include="twitchapi\streams\TwitchStream.cs" />
     <Compile Include="twitchapi\TwitchAPIErrors.cs" />
+    <Compile Include="twitchapi\TwitchAPIUtil.cs" />
     <Compile Include="twitchapi\users\GetUsersRequest.cs" />
   </ItemGroup>
   <ItemGroup>

@@ -13,6 +13,7 @@ namespace TwitchAPI.twitchapi {
     public enum RequestMode { POST, GET }
 
     public abstract class BaseRequest<ResponseType> {
+        private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
 
         public RequestMode Mode { get; protected set; } = RequestMode.POST;
 
@@ -43,6 +44,7 @@ namespace TwitchAPI.twitchapi {
                     AddQueryParameter(requestURL, param.Key, s);
                 }
             }
+            Logger.Trace("Request: " + requestURL.Uri.AbsoluteUri);
             WebRequest request = WebRequest.Create(requestURL.Uri);
             switch (Mode) {
                 case RequestMode.POST:

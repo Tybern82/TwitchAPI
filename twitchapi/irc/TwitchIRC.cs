@@ -33,6 +33,8 @@ namespace TwitchAPI.twitchapi.irc {
         private SslStream? sslStream { get; set; }
         private StreamReader? reader { get; set; }
 
+        public bool StayConnected { get; set; } 
+
         public object _lock = new object();
 
         private Dictionary<string, int> joinedChannels = new Dictionary<string, int>();
@@ -73,28 +75,9 @@ namespace TwitchAPI.twitchapi.irc {
         }
 
         private void doConnect() {
-            if (oAuth == null) {
-                // Make sure we're able to authenticate with the server BEFORE trying to connect
-                Logger.Warn("Missing authentication to connect with server.");
-                throw new TwitchAPIAuthenticationException("Reconnect failed - missing authentication token.");
-            }
-            oAuth.Scope |= TwitchScope.CHAT_READ | TwitchScope.CHAT_EDIT;   // ensure required scopes are set on request
-            client = new TcpClient(SERVER, 6697);
-            Logger.Trace(() => { return "Reconnected client to: <" + SERVER + ">:" + 6697; });
-            sslStream = new SslStream(client.GetStream(), false, new RemoteCertificateValidationCallback(ValidateServerCertificate), null);
-            try {
-                sslStream.AuthenticateAsClient(SERVER);
-            } catch (AuthenticationException e) {
-                Logger.Warn(() => { return "Exception: " + e.Message; });
-                if (e.InnerException != null) {
-                    Logger.Warn(() => { return "Inner Exception: " + e.InnerException.Message; });
-                }
-                Logger.Warn(() => { return "Authentication failed - closing the connection."; });
-                client.Close();
-                throw new TwitchAPIAuthenticationException("Reconnect failed - unable to authenticate with server.");
-            }
-            reader = new StreamReader(sslStream);
             // Socket Connected - DO LOGIN
+            oAuth.clearToken();
+            IRCCapCommand.send(this, ":twitch.tv/tags");
             IRCPassCommand.send(this, oAuth);
             IRCNickCommand.send(this, Nickname);
             IRCUserCommand.send(this, Nickname, RealName);
@@ -102,6 +85,28 @@ namespace TwitchAPI.twitchapi.irc {
             foreach (KeyValuePair<string,int> item in joinedChannels) {
                 string channel = item.Key;
                 IRCJoinCommand.send(this, channel);
+            }
+        }
+
+        private void doCreateClient() {
+            lock (_lock) {
+                client = new TcpClient(SERVER, 6697);
+                Logger.Trace(() => { return string.Format("Connected Twitch IRC client to: <{0}:6697>", SERVER); });
+                sslStream = new SslStream(client.GetStream(), false, new RemoteCertificateValidationCallback(ValidateServerCertificate), null);
+                try {
+                    sslStream.AuthenticateAsClient(SERVER);
+                } catch (AuthenticationException e) {
+                    Logger.Warn(() => { return "Exception: " + e.Message; });
+                    Exception curr = e;
+                    while (curr.InnerException != null) {
+                        Logger.Warn(() => { return "Caused by: " + curr.InnerException.Message; });
+                        curr = curr.InnerException;
+                    }
+                    Logger.Warn(() => { return "Authentication failed - closing the connection."; });
+                    client.Close();
+                    sslStream = null;
+                }
+                reader = new StreamReader(sslStream);
             }
         }
 
@@ -113,75 +118,70 @@ namespace TwitchAPI.twitchapi.irc {
                     return false;
                 }
                 oAuth.Scope |= TwitchScope.CHAT_READ | TwitchScope.CHAT_EDIT;   // ensure required scopes are set on request
-                client = new TcpClient(SERVER, 6697);
-                Logger.Trace(() => { return "Connected client to: <" + SERVER + ">:" + 6697; });
-                sslStream = new SslStream(client.GetStream(), false, new RemoteCertificateValidationCallback(ValidateServerCertificate), null);
-                try {
-                    sslStream.AuthenticateAsClient(SERVER);
-                } catch (AuthenticationException e) {
-                    Logger.Warn(() => { return "Exception: " + e.Message; });
-                    if (e.InnerException != null) {
-                        Logger.Warn(() => { return "Inner Exception: " + e.InnerException.Message; });
-                    }
-                    Logger.Warn(() => { return "Authentication failed - closing the connection."; });
-                    client.Close();
-                    return false;
-                }
-                reader = new StreamReader(sslStream);
+                StayConnected = true;
+                doCreateClient();
                 // Socket Connected - DO LOGIN
-                IRCPassCommand.send(this, oAuth);
-                IRCNickCommand.send(this, Nickname);
-                IRCUserCommand.send(this, Nickname, RealName);
-                ReadMessage();
+                doConnect();
                 Task.Run(() => {
-                    // System.Threading.Thread.Sleep(5000);    // avoid race condidition in joining channel
-                    while (sslStream.CanRead) {
-                        try {
-                            string response = ReadMessage();
-                            Match m = Regex.Match(response, "(:(?<prefix>[^ ]*?) )?(?<command>[^ ]*) (?<params>.*)");
-                            string prefix = m.Groups["prefix"].Value;
-                            string command = m.Groups["command"].Value;
-                            string p = m.Groups["params"].Value;
+                    // System.Threading.Thread.Sleep(5000);    // avoid race condition in joining channel
+                    while (StayConnected) {
+                        if (sslStream == null) {
+                            doCreateClient();
+                            doConnect();
+                        }
+                        while ((sslStream != null) && (sslStream.CanRead)) {
+                            try {
+                                lock (_lock) {
+                                    string response = ReadMessage();
+                                    Match m = Regex.Match(response, "(@(?<tags>[^ ]*) )?(:(?<prefix>[^ ]*) )?(?<command>[^ ]*) (?<params>.*)");
+                                    string tags = m.Groups["tags"].Value;
+                                    string prefix = m.Groups["prefix"].Value;
+                                    string command = m.Groups["command"].Value;
+                                    string p = m.Groups["params"].Value;
 
-                            // Logger.Trace(() => { return string.Format("Prefix <{0}> Command<{1}> Params<{2}>", prefix, command, p); });
+                                    // Logger.Trace(() => { return string.Format("Prefix <{0}> Command<{1}> Params<{2}>", prefix, command, p); });
 
-                            // Decode user
-                            m = Regex.Match(prefix, "((?<nick>[^!]*)[!](?<user>[^@]*)[@](?<host>.*))|(?<servername>[^!@]*)");
-                            string servername = m.Groups["servername"].Value;
-                            string nick = m.Groups["nick"].Value;
-                            string user = m.Groups["user"].Value;
-                            string host = m.Groups["host"].Value;
-                            // Logger.Trace(() => { return string.Format("Servername <{0}> Nick <{1}> User <{2}> Host <{3}>", servername, nick, user, host); });
+                                    // Decode user
+                                    m = Regex.Match(prefix, "((?<nick>[^!]*)[!](?<user>[^@]*)[@](?<host>.*))|(?<servername>[^!@]*)");
+                                    string servername = m.Groups["servername"].Value;
+                                    string nick = m.Groups["nick"].Value;
+                                    string user = m.Groups["user"].Value;
+                                    string host = m.Groups["host"].Value;
+                                    // Logger.Trace(() => { return string.Format("Servername <{0}> Nick <{1}> User <{2}> Host <{3}>", servername, nick, user, host); });
 
-                            string name = string.IsNullOrWhiteSpace(nick) ? servername : nick;
+                                    string name = string.IsNullOrWhiteSpace(nick) ? servername : nick;
 
-                            if (command.Equals("PRIVMSG")) {
-                                m = Regex.Match(p, "#(?<channel>.*) :(?<message>.*)");
-                                string channel = m.Groups["channel"].Value;
-                                string message = m.Groups["message"].Value;
+                                    if (command.Equals("PRIVMSG")) {
+                                        m = Regex.Match(tags, "emotes=(?<emotes>[^;]*);");
+                                        string emotes = m.Groups["emotes"].Value;
+                                        m = Regex.Match(p, "#(?<channel>.*) :(?<message>.*)");
+                                        string channel = m.Groups["channel"].Value;
+                                        string message = m.Groups["message"].Value;
 
-                                // Logger.Trace(() => { return string.Format("User <{0}> Message <{1}> on <{2}>", name, message, channel); });
+                                        // Logger.Trace(() => { return string.Format("User <{0}> Message <{1}> on <{2}>", name, message, channel); });
 
-                                // Do onMessageReceived
-                                GetUsersRequest req = new GetUsersRequest(name);
-                                GetUsersResponse resp = req.doRequest(oAuth);
-                                if (resp.Users.Count != 0) {
-                                    Logger.Trace(string.Format("Invoking event: onMessageReceived <{0}>", message));
-                                    if (Listeners.ContainsKey(channel)) {
-                                        foreach (IRCListener l in Listeners[channel]) {
-                                            l.onMessageReceived(resp.Users[0], message);
+                                        // Do onMessageReceived
+                                        GetUsersRequest req = new GetUsersRequest(name);
+                                        GetUsersResponse resp = req.doRequest(oAuth);
+                                        if (resp.Users.Count != 0) {
+                                            Logger.Trace(string.Format("Invoking event: onMessageReceived <{0}>", message));
+                                            if (Listeners.ContainsKey(channel)) {
+                                                foreach (IRCListener l in Listeners[channel]) {
+                                                    l.onMessageReceived(resp.Users[0], message, emotes);
+                                                }
+                                            }
                                         }
+                                    } else if (command.Equals("PING")) {
+                                        IRCPongCommand.send(this);
+                                    } else if (command.Equals("RECONNECT")) {
+                                        Logger.Trace("Reconnecting");
+                                        // IRCQuitCommand.send(this);
+                                        doConnect();
                                     }
                                 }
-                            } else if (command.Equals("PING")) {
-                                IRCPongCommand.send(this);
-                            } else if (command.Equals("RECONNECT")) {
-                                Logger.Trace("Reconnecting");
-                                client.Close();
-                                doConnect();
+                            } catch (Exception e) {
+                                Logger.Warn(e.Message);
                             }
-                        } catch (Exception e) {
-                            Logger.Warn(e.Message);
                         }
                     }
                 });
@@ -192,9 +192,11 @@ namespace TwitchAPI.twitchapi.irc {
 
         public void Disconnect() {
             lock (_lock) {
+                StayConnected = false;
                 if (client != null) {
                     IRCQuitCommand.send(this);
                     client.Close();
+                    sslStream = null;
                 }
                 client = null;
                 Logger.Trace("Closed connected client.");
@@ -219,21 +221,30 @@ namespace TwitchAPI.twitchapi.irc {
         }
 
         private string ReadMessage() {
-            if (client == null) return "";
-            if (reader == null) return "";
-            // Logger.Trace("Reading message from IRC.");
-            string? _result = reader.ReadLine();
-            if (_result == null) {
-                Logger.Trace("No message to receive.");
-                _result = "";
-            } else {
-                Logger.Trace(() => { return "MSG: <" + _result + ">"; });
+            lock (_lock) {
+                if (client == null) return "";
+                if (reader == null) return "";
+                if (sslStream == null) {
+                    reader = null;
+                    return "";
+                }
+                // Logger.Trace("Reading message from IRC.");
+                string? _result = null;
+                if (!reader.EndOfStream) {
+                    _result = reader.ReadLine();
+                }
+                if (_result == null) {
+                    Logger.Trace("No message to receive.");
+                    _result = "";
+                } else {
+                    Logger.Trace(() => { return "MSG: <" + _result + ">"; });
+                }
+                return _result;
             }
-            return _result;
         }
     }
 
     public interface IRCListener {
-        public void onMessageReceived(UserDetails user, string message);
+        public void onMessageReceived(UserDetails user, string message, string emotes);
     }
 }
